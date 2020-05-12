@@ -6,17 +6,18 @@ FROM $OS_IMAGE as build
 ARG OS_RELEASE
 ARG OS_IMAGE
 ARG HTTP_PROXY=""
-ARG USER="insteonmqtt"
+ARG USER="insteon"
 
 LABEL MAINTAINER riek@llunved.net
 
 ENV LANG=en_US.UTF-8
+ENV USER=$USER
 USER root
 
-RUN mkdir -p /insteonmqtt
-WORKDIR /insteonmqtt
+RUN mkdir -p /insteon_mqtt
+WORKDIR /insteon_mqtt
 
-ADD ./rpmreqs-rt.txt ./rpmreqs-build.txt ./rpmreqs-dev.txt /insteonmqtt/
+ADD ./rpmreqs-rt.txt ./rpmreqs-build.txt ./rpmreqs-dev.txt /insteon_mqtt/
 
 ENV http_proxy=$HTTP_PROXY
 RUN rpm -ivh  https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$OS_RELEASE.noarch.rpm \
@@ -32,35 +33,50 @@ RUN mkdir /sysimg \
     && rm -rf /sysimg/var/cache/* \
     && ls -alh /sysimg/var/cache
 
-RUN adduser -R /sysimg -u 1010 -r -g root -G dialout -d /insteonmqtt -s /sbin/nologin -c "insteonmqtt user" $USER
-
 #FIXME this needs to be more elegant
 RUN ln -s /sysimg/usr/share/zoneinfo/America/New_York /sysimg/etc/localtime
 
-ADD . /insteonmqtt/
+#Add the insteon user both in the build and rt contexts
+RUN adduser -u 1010 -r -g root -G dialout -d /insteon_mqtt -s /sbin/nologin -c "insteon_mqtt user" $USER
+RUN adduser -R /sysimg -u 1010 -r -g root -G dialout -d /insteon_mqtt -s /sbin/nologin -c "insteon_mqtt user" $USER
 
-RUN /usr/bin/python3 -m virtualenv -v /insteonmqtt/ && source /insteonmqtt/bin/activate
+RUN chown -R $USER:0 /insteon_mqtt
+USER $USER
+
+
+ADD . /insteon_mqtt/
+
+RUN /usr/bin/python3 -m virtualenv -v /insteon_mqtt/ 
 
 # Add some dev / debug content
 #RUN if [ ! -z "$DEVBUILD" ] ; then npm install -g nodemon; fi 
 
-RUN /usr/bin/pip3 install . 
-RUN mv /insteonmqtt/config.yaml /insteonmqtt/config.yaml.example
-RUN cp -pR /insteonmqtt/ /sysimg/insteonmqtt/
+RUN source /insteon_mqtt/bin/activate && /insteon_mqtt/bin/pip3 install /insteon_mqtt
+RUN mv /insteon_mqtt/config.yaml /insteon_mqtt/config.yaml.example
+RUN rm -rf /insteon_mqtt/.cache
+
+USER root
+RUN cp -pR /insteon_mqtt/ /sysimg/insteon_mqtt/
 
 # Now create the runtime image
 FROM scratch AS runtime
 
 COPY --from=build /sysimg /
 
-WORKDIR /insteonmqtt
+WORKDIR /insteon_mqtt
+
+ARG USER="insteon"
+
+VOLUME /etc/insteon_mqtt 
+VOLUME /var/log/insteon_mqtt 
+VOLUME /var/lib/insteon_mqtt
 
 ENV USER=$USER
 ENV CHOWN=true 
-ENV CHOWN_DIRS="/etc/insteonmqtt /var/log/insteonmqtt /var/lib/insteonmqtt" 
+ENV CHOWN_DIRS="/etc/insteon_mqtt /var/log/insteon_mqtt /var/lib/insteon_mqtt" 
   
 #FIXME - Do we need this?
-RUN if [ ! -z "$DEVBUILD" ] ; then chown -R ${USER}:root /insteonmqtt ; fi
+RUN if [ ! -z "$DEVBUILD" ] ; then chown -R ${USER}:root /insteon_mqtt ; fi
 
 ADD ./scripts/entrypoint.sh \ 
     ./scripts/install.sh \ 
@@ -77,8 +93,8 @@ EXPOSE 8091
 ENTRYPOINT ["/sbin/entrypoint.sh"]
 CMD ["/bin/start.sh"]
 
-LABEL RUN="podman run --rm -t -i --name \$NAME -p 8091:8091 --net=host --device /dev/ttyACM0 --entrypoint /sbin/entrypoint.sh -v /var/lib/insteonmqtt/insteonmqtt:/insteonmqtt/store -v /var/lib/insteonmqtt/openzwave:/etc/openzwave -v /var/log/insteonmqtt:/var/log/insteonmqtt \$IMAGE /bin/start.sh"
-LABEL INSTALL="podman run --rm -t -i --privileged --rm --net=host --ipc=host --pid=host -v /:/host -v /run:/run -e HOST=/host -e IMAGE=\$IMAGE -e NAME=\$NAME -e LOGDIR=/var/log -e DATADIR=/var/lib --entrypoint /bin/sh  \$IMAGE /sbin/install.sh"
-LABEL UPGRADE="podman run --rm -t -i --privileged --rm --net=host --ipc=host --pid=host -v /:/host -v /run:/run -e HOST=/host -e IMAGE=\$IMAGE -e NAME=\$NAME -e LOGDIR=/var/log -e DATADIR=/var/lib --entrypoint /bin/sh  \$IMAGE /sbin/upgrade.sh"
-LABEL UNINSTALL="podman run --rm -t -i --privileged --rm --net=host --ipc=host --pid=host -v /:/host -v /run:/run -e HOST=/host -e IMAGE=\$IMAGE -e NAME=\$NAME -e LOGDIR=/var/log -e DATADIR=/var/lib --entrypoint /bin/sh  \$IMAGE /sbin/uninstall.sh"
+LABEL RUN="podman run --rm -t -i --name \$NAME -p 8091:8091 --net=host --device /dev/ttyACM0 --entrypoint /sbin/entrypoint.sh -v /var/lib/insteon_mqtt/insteon_mqtt:/insteon_mqtt/store -v /var/lib/insteon_mqtt/openzwave:/etc/openzwave -v /var/log/insteon_mqtt:/var/log/insteon_mqtt \$IMAGE /bin/start.sh"
+LABEL INSTALL="podman run --rm -t -i --privileged --rm --net=host --ipc=host --pid=host -v /:/host -v /run:/run -e HOST=/host -e IMAGE=\$IMAGE -e NAME=\$NAME -e LOGDIR=/var/log -e DATADIR=/var/lib -e CONFDIR=/etc --entrypoint /bin/sh  \$IMAGE /sbin/install.sh"
+LABEL UPGRADE="podman run --rm -t -i --privileged --rm --net=host --ipc=host --pid=host -v /:/host -v /run:/run -e HOST=/host -e IMAGE=\$IMAGE -e NAME=\$NAME -e LOGDIR=/var/log -e DATADIR=/var/lib -e CONFDIR=/etc --entrypoint /bin/sh  \$IMAGE /sbin/upgrade.sh"
+LABEL UNINSTALL="podman run --rm -t -i --privileged --rm --net=host --ipc=host --pid=host -v /:/host -v /run:/run -e HOST=/host -e IMAGE=\$IMAGE -e NAME=\$NAME -e LOGDIR=/var/log -e DATADIR=/var/lib -e CONFDIR=/etc --entrypoint /bin/sh  \$IMAGE /sbin/uninstall.sh"
 
