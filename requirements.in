@@ -1,0 +1,5 @@
+paho-mqtt
+pyserial
+pyyaml
+Jinja2
+ruamel.yaml
